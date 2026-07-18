@@ -203,31 +203,59 @@ def check_invisible_chars(folder: LanguageFolder) -> list[Finding]:
     return findings
 
 
-def check_missing_accents(folder: LanguageFolder) -> list[Finding]:
-    """Palabras frecuentes escritas sin tilde.
+# Palabras cuya forma sin tilde NO existe en español: avisar es siempre correcto.
+INEQUIVOCAS = {
+    "victima": "víctima", "victimas": "víctimas",
+    "mantendra": "mantendrá", "morira": "morirá", "podra": "podrá",
+    "tendra": "tendrá", "sera": "será", "estara": "estará", "hara": "hará",
+    "quimico": "químico", "quimica": "química", "quimicos": "químicos",
+    "organos": "órganos", "craneo": "cráneo", "musculo": "músculo",
+    "cirugia": "cirugía", "anestesia": None, "arteria": None,
+    "dano": "daño", "danos": "daños", "extremidad": None,
+    "dolencia": None, "protesis": "prótesis", "higado": "hígado",
+    "estomago": "estómago", "corazon": "corazón", "pulmon": "pulmón",
+    "cicatriz": None, "amputacion": "amputación", "operacion": "operación",
+}
 
-    Lista corta y conservadora: solo formas en las que la versión sin tilde no
-    es una palabra española válida en ese contexto, para no dar falsos avisos.
+# Palabras que existen con y sin tilde con significados distintos. Aquí el
+# aviso solo puede ser una sugerencia: «afecto» es un sustantivo válido, y
+# «perdida» un adjetivo. Marcarlas como error produce el ruido que hace que
+# la gente deje de leer los avisos.
+AMBIGUAS = {
+    "afecto": "afectó", "perdida": "pérdida", "mas": "más",
+    "sangrara": "sangrará", "medico": "médico", "practica": "práctica",
+    "publico": "público", "solo": "sólo (en desuso desde 2010)",
+    "esta": "está", "el": "él", "si": "sí", "mi": "mí", "tu": "tú",
+}
+
+
+def check_missing_accents(folder: LanguageFolder) -> list[Finding]:
+    """Palabras probablemente escritas sin tilde.
+
+    Se separan en dos niveles a propósito. Las formas que sin tilde no existen
+    en español se avisan; las que existen con otro significado solo se sugieren,
+    porque decidirlo exige leer la frase. Un validador que grita por todo
+    entrena a quien lo usa para ignorarlo.
     """
-    sospechosas = {
-        "perdida": "pérdida", "mas": "más", "victima": "víctima",
-        "mantendra": "mantendrá", "sangrara": "sangrará", "afecto": "afectó",
-        "cardiaco": "cardíaco", "quimico": "químico", "quimica": "química",
-        "organos": "órganos", "craneo": "cráneo", "musculo": "músculo",
-        "adrenalina": None, "medico": "médico", "cirugia": "cirugía",
-        "dano": "daño", "morira": "morirá", "podra": "podrá",
-    }
     findings: list[Finding] = []
     for key in folder.keys:
-        palabras = re.findall(r"\b[a-záéíóúñü]+\b", key.value.lower())
-        for palabra in set(palabras):
-            correccion = sospechosas.get(palabra)
+        palabras = set(re.findall(r"\b[a-záéíóúñü]+\b", key.value.lower()))
+
+        for palabra in palabras & INEQUIVOCAS.keys():
+            correccion = INEQUIVOCAS[palabra]
             if correccion:
                 findings.append(Finding(
                     Severity.WARNING, "tilde-ausente",
-                    f"«{palabra}» probablemente debería ser «{correccion}».",
+                    f"«{palabra}» no existe sin tilde: debería ser «{correccion}».",
                     key.source, key.line, key.id,
                 ))
+
+        for palabra in palabras & AMBIGUAS.keys():
+            findings.append(Finding(
+                Severity.INFO, "tilde-dudosa",
+                f"«{palabra}» existe, pero comprueba si aquí toca «{AMBIGUAS[palabra]}».",
+                key.source, key.line, key.id,
+            ))
     return findings
 
 

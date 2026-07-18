@@ -223,6 +223,23 @@ class TextHygieneTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("daño PEM", found[0].message)
 
+    def test_tilde_inequivoca_es_aviso(self):
+        folder = self._folder("<X.description>La victima grita.</X.description>")
+        found = [f for f in checks.check_missing_accents(folder) if f.rule == "tilde-ausente"]
+        self.assertEqual(len(found), 1)
+        self.assertIs(found[0].severity, Severity.WARNING)
+
+    def test_tilde_ambigua_solo_sugiere(self):
+        """«afecto» es un sustantivo válido: no puede marcarse como aviso.
+
+        La primera versión de la regla lo trataba igual que a las formas que no
+        existen, y eso llenaba la salida de ruido.
+        """
+        folder = self._folder("<X.description>Le tiene afecto.</X.description>")
+        found = checks.check_missing_accents(folder)
+        self.assertTrue(found)
+        self.assertTrue(all(f.severity is Severity.INFO for f in found))
+
     def test_clave_vacia_es_error(self):
         folder = self._folder("<X.label></X.label>")
         found = checks.check_empty(folder)
