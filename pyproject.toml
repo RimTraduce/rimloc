@@ -1,0 +1,21 @@
+[project]
+name = "rimloc"
+version = "0.1.0"
+description = "Utilidades para mantener traducciones de mods de RimWorld"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+# Sin dependencias a propósito: todo con la librería estándar. Una herramienta
+# de traducción tiene que seguir funcionando dentro de cinco años sin que nadie
+# la mantenga, y cada dependencia es una forma de que eso no ocurra.
+dependencies = []
+
+[project.scripts]
+rimloc = "rimloc.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["rimloc*"]
