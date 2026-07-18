@@ -35,7 +35,13 @@ Es deliberado — una herramienta de traducción debería seguir funcionando den
 cinco años sin que nadie la mantenga, y cada dependencia es una forma de que eso no ocurra.
 
 ```bash
-git clone https://github.com/<tu-usuario>/rimloc
+pip install "git+https://github.com/RimTraduce/rimloc"
+```
+
+O para trabajar sobre el código:
+
+```bash
+git clone https://github.com/RimTraduce/rimloc
 cd rimloc
 pip install -e .
 ```
