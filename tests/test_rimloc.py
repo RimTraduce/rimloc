@@ -230,5 +230,40 @@ class TextHygieneTests(unittest.TestCase):
         self.assertIs(found[0].severity, Severity.ERROR)
 
 
+class DeployTests(unittest.TestCase):
+    def test_no_copia_material_de_desarrollo(self):
+        """Un mod publicado no debe llevar dentro el glosario ni los workflows.
+
+        La primera versión solo excluía .git, *.md y .github, y colaba el
+        glosario.json en la carpeta de mods del juego.
+        """
+        import argparse
+
+        from rimloc.cli import cmd_deploy
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = Path(tmp) / "mimod"
+            _write(mod, "About/About.xml", "<ModMetaData><name>X</name></ModMetaData>")
+            _write(mod, "Languages/Spanish/DefInjected/ThingDef/A.xml",
+                   _lang_data("<X.label>algo</X.label>"))
+            _write(mod, "glosario.json", "{}")
+            _write(mod, "README.md", "# doc")
+            _write(mod, ".github/workflows/ci.yml", "name: ci")
+
+            rimworld = Path(tmp) / "RimWorld"
+            (rimworld / "Mods").mkdir(parents=True)
+            (rimworld / "Version.txt").write_text("1.6", encoding="utf-8")
+
+            code = cmd_deploy(argparse.Namespace(
+                mod=str(mod), rimworld=str(rimworld), name="prueba", force=True))
+            self.assertEqual(code, 0)
+
+            destino = rimworld / "Mods" / "prueba"
+            self.assertTrue((destino / "About/About.xml").exists())
+            self.assertTrue((destino / "Languages").is_dir())
+            for sobra in ("glosario.json", "README.md", ".github"):
+                self.assertFalse((destino / sobra).exists(), f"{sobra} no debería copiarse")
+
+
 if __name__ == "__main__":
     unittest.main()

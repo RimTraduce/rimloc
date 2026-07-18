@@ -24,6 +24,16 @@ RIMWORLD_PATHS = (
 )
 
 
+#: Material de desarrollo que no debe viajar al juego ni al Workshop.
+#: RimWorld ignora lo que no reconoce, pero un mod publicado con el glosario,
+#: los workflows y el README dentro es ruido para quien lo descargue.
+DEV_ONLY = (
+    ".git", ".github", ".gitignore", ".gitattributes",
+    "*.md", "*.json", "*.py", "*.toml", "*.yml", "*.yaml",
+    "__pycache__", ".vscode", ".idea", ".DS_Store", "Thumbs.db",
+)
+
+
 def find_rimworld() -> Path | None:
     for raw in RIMWORLD_PATHS:
         path = Path(os.path.expanduser(raw))
@@ -250,10 +260,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     if destino.exists():
         shutil.rmtree(destino)
-    shutil.copytree(
-        mod, destino,
-        ignore=shutil.ignore_patterns(".git", "*.md", "__pycache__", ".github"),
-    )
+    shutil.copytree(mod, destino, ignore=shutil.ignore_patterns(*DEV_ONLY))
     print(f"Instalado en {destino}")
     print("Actívalo en el menú de mods del juego (después del mod original).")
     return 0
