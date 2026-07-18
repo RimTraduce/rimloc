@@ -304,6 +304,50 @@ def check_label_case(folder: LanguageFolder) -> list[Finding]:
 
 # --- Glosario ----------------------------------------------------------------
 
+COMP_POR_INDICE = re.compile(r"\.comps\.(\d+)\.")
+
+
+def check_comp_index(folder: LanguageFolder, originals: dict[str, str]) -> list[Finding]:
+    """Comps referenciados por posición cuando existe un nombre estable.
+
+    `WCE2_Cut.comps.2.permanentLabel` funciona solo mientras nadie toque la
+    lista de comps del hediff. En cuanto otro mod inserta, quita o reemplaza uno
+    —Combat Extended sustituye `HediffComp_TendDuration` por el suyo—, los
+    índices se desplazan y la inyección apunta al comp equivocado. RimWorld lo
+    registra como `Field X does not exist in type Y` y sigue cargando, así que
+    el texto se queda en inglés sin que nada se rompa a la vista.
+
+    Solo se avisa cuando el mod original ofrece una alternativa por nombre: si
+    un def lleva varios comps de la misma clase, el nombre no los distingue y
+    el índice es la única forma de referenciarlos.
+    """
+    findings: list[Finding] = []
+    for key in folder.keys:
+        match = COMP_POR_INDICE.search(key.name)
+        if not match:
+            continue
+        campo = key.name.rsplit(".", 1)[-1]
+        cabeza = key.name.split(".comps.", 1)[0]
+        alternativa = next(
+            (kid for kid in originals
+             if kid.startswith(f"{key.def_type}/{cabeza}.comps.")
+             and kid.endswith(f".{campo}")
+             and not COMP_POR_INDICE.search(kid)),
+            None,
+        )
+        if not alternativa:
+            continue
+        nombre = alternativa.split(".comps.", 1)[1].rsplit(".", 1)[0]
+        findings.append(Finding(
+            Severity.WARNING, "comp-por-indice",
+            f"Referencia el comp por posición (comps.{match.group(1)}). Si otro mod "
+            f"reordena los comps de este def, la inyección apuntará al comp equivocado "
+            f"y el texto se quedará en inglés. Usa «comps.{nombre}».",
+            key.source, key.line, key.id,
+        ))
+    return findings
+
+
 def check_glossary(folder: LanguageFolder, forbidden: dict[str, str]) -> list[Finding]:
     """Términos proscritos por el glosario del proyecto.
 
@@ -344,6 +388,7 @@ def run_all(
 
     if originals:
         findings += check_placeholders(folder, originals)
+        findings += check_comp_index(folder, originals)
     if forbidden:
         findings += check_glossary(folder, forbidden)
 

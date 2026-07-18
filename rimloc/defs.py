@@ -23,7 +23,7 @@ from pathlib import Path
 TRANSLATABLE_FIELDS = frozenset({
     # Etiquetas y descripciones
     "label", "labelShort", "labelPlural", "labelMale", "labelFemale",
-    "labelNoun", "labelAdjective", "customLabel", "permanentLabel",
+    "labelNoun", "labelNounPretty", "labelAdjective", "customLabel", "permanentLabel",
     "description", "descriptionShort", "descriptionFuture", "baseDescription",
     # Trabajos y verbos
     "jobString", "verb", "gerund", "gerundLabel", "reportString", "skillLabel",
@@ -103,20 +103,56 @@ def _resolve_inheritance(nodes: list[tuple[ET.Element, Path]]) -> None:
                 propios.add(heredado.tag)
 
 
+def _comp_segment(child: ET.Element) -> str | None:
+    """Nombre estable de un `<li Class="...">` dentro de una lista de comps.
+
+    RimWorld admite referenciar un comp por su clase en vez de por su posición,
+    y es lo que hay que usar: el índice numérico se rompe en cuanto otro mod
+    reemplaza o reordena los comps. Combat Extended, por ejemplo, sustituye
+    `HediffComp_TendDuration` por su propia versión, y a partir de ahí todos los
+    índices del hediff se desplazan y las inyecciones fallan en silencio.
+
+    La convención del juego es el nombre del comp, no el de sus propiedades:
+    `HediffCompProperties_GetsPermanent` se referencia como `HediffComp_GetsPermanent`.
+    """
+    class_attr = child.get("Class")
+    if not class_attr:
+        return None
+    nombre = class_attr.rsplit(".", 1)[-1]  # descarta el espacio de nombres
+    return nombre.replace("CompProperties_", "Comp_")
+
+
 def _walk(node: ET.Element, prefix: str, def_type: str, def_name: str,
           path: Path, out: list[SourceKey]) -> None:
     """Recorre un Def emitiendo las claves traducibles que encuentra.
 
-    Las listas se indexan por posición (`stages.0.label`), que es como RimWorld
-    referencia sus elementos.
+    Las listas se indexan por posición (`stages.0.label`), salvo los comps, que
+    se referencian por nombre de clase (ver `_comp_segment`).
     """
     li_index = 0
+    dentro_de_comps = prefix.rsplit(".", 1)[-1] == "comps" if prefix else False
+
+    # El nombre de clase solo sirve como identificador si es único en la lista.
+    # Un precepto puede llevar varios PreceptComp_KnowsMemoryThought, y entonces
+    # nombrarlos a todos igual haría colisionar las claves y se perderían
+    # traducciones. En ese caso hay que seguir usando el índice.
+    nombres_unicos: set[str] = set()
+    if dentro_de_comps:
+        vistos: dict[str, int] = {}
+        for hermano in node:
+            if isinstance(hermano.tag, str) and hermano.tag == "li":
+                nombre = _comp_segment(hermano)
+                if nombre:
+                    vistos[nombre] = vistos.get(nombre, 0) + 1
+        nombres_unicos = {n for n, veces in vistos.items() if veces == 1}
+
     for child in node:
         if not isinstance(child.tag, str):
             continue
 
         if child.tag == "li":
-            segment = str(li_index)
+            comp = _comp_segment(child) if dentro_de_comps else None
+            segment = comp if comp in nombres_unicos else str(li_index)
             li_index += 1
             # El nombre de campo relevante para un <li> es el de su lista padre
             field_name = prefix.rsplit(".", 1)[-1] if prefix else ""

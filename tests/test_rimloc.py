@@ -164,6 +164,32 @@ class DefExtractionTests(unittest.TestCase):
         self.assertIn("RecipeDef/Hijo.label", ids)
         self.assertIn("RecipeDef/Hijo.description", ids)
 
+    def test_los_comps_se_indexan_por_nombre_de_clase(self):
+        """Un comp se referencia por su clase, no por su posición.
+
+        El índice numérico se rompe cuando otro mod reordena los comps: Combat
+        Extended reemplaza HediffComp_TendDuration y desplaza todo lo demás.
+        RimWorld nombra el comp, no sus propiedades: HediffCompProperties_X se
+        referencia como HediffComp_X.
+        """
+        keys = self._defs("""
+          <HediffDef>
+            <defName>H</defName>
+            <comps>
+              <li Class="HediffCompProperties_TendDuration">
+                <labelTendedWell>bandaged</labelTendedWell>
+              </li>
+              <li Class="HediffCompProperties_GetsPermanent">
+                <permanentLabel>torture scar</permanentLabel>
+              </li>
+            </comps>
+          </HediffDef>
+        """)
+        ids = {k.id for k in keys}
+        self.assertIn("HediffDef/H.comps.HediffComp_GetsPermanent.permanentLabel", ids)
+        self.assertIn("HediffDef/H.comps.HediffComp_TendDuration.labelTendedWell", ids)
+        self.assertNotIn("HediffDef/H.comps.1.permanentLabel", ids)
+
     def test_las_listas_se_indexan_por_posicion(self):
         keys = self._defs("""
           <HediffDef>
@@ -239,6 +265,18 @@ class TextHygieneTests(unittest.TestCase):
         found = checks.check_missing_accents(folder)
         self.assertTrue(found)
         self.assertTrue(all(f.severity is Severity.INFO for f in found))
+
+    def test_avisa_de_comps_referenciados_por_indice(self):
+        folder = self._folder("<H.comps.2.permanentLabel>cicatriz</H.comps.2.permanentLabel>")
+        found = checks.check_comp_index(folder, {"ThingDef/H.comps.HediffComp_GetsPermanent.permanentLabel": "torture scar"})
+        self.assertEqual(len(found), 1)
+        self.assertIs(found[0].severity, Severity.WARNING)
+
+    def test_no_avisa_de_comps_por_nombre(self):
+        folder = self._folder(
+            "<H.comps.HediffComp_GetsPermanent.permanentLabel>cicatriz"
+            "</H.comps.HediffComp_GetsPermanent.permanentLabel>")
+        self.assertEqual(checks.check_comp_index(folder, {"ThingDef/H.comps.HediffComp_GetsPermanent.permanentLabel": "x"}), [])
 
     def test_clave_vacia_es_error(self):
         folder = self._folder("<X.label></X.label>")
