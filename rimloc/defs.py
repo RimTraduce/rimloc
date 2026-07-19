@@ -55,7 +55,14 @@ class SourceKey:
 
     @property
     def id(self) -> str:
-        return f"{self.def_type}/{self.name}"
+        """Debe coincidir con `TranslationKey.id`: es la clave del cotejo.
+
+        Las Keyed van sin tipo de Def, y ahí la identidad es el nombre a secas.
+        Si aquí se emitiera `/NoItemsAreStoredHere` y allí
+        `NoItemsAreStoredHere`, `diff` daría cada clave por ausente y sobrante
+        a la vez.
+        """
+        return f"{self.def_type}/{self.name}" if self.def_type else self.name
 
 
 def _collect_def_nodes(defs_root: Path) -> list[tuple[ET.Element, Path]]:
@@ -201,6 +208,92 @@ def _synthesize_recipe_makers(nodes: list[tuple[ET.Element, Path]]) -> list[Sour
     return claves
 
 
+def _synthesize_architect_categories(nodes: list[tuple[ET.Element, Path]]) -> list[SourceKey]:
+    """Genera las claves `Architect_<defName>` de las categorías del arquitecto.
+
+    Por cada `DesignationCategoryDef`, RimWorld crea en tiempo de carga una
+    `KeyBindingCategoryDef` para el atajo de teclado de esa pestaña. Como pasa
+    con `Make_<defName>`, no existe en ningún XML: los idiomas del mod la
+    traducen y un extractor que no la conozca la daría por sobrante.
+
+    El texto inglés lo compone el juego a partir del label de la categoría.
+    """
+    claves: list[SourceKey] = []
+    for node, path in nodes:
+        if node.tag != "DesignationCategoryDef":
+            continue
+        def_name = node.findtext("defName", "").strip()
+        if not def_name:
+            continue
+        label = node.findtext("label", "").strip()
+        categoria = f"Architect_{def_name}"
+        claves.append(SourceKey("KeyBindingCategoryDef", f"{categoria}.label",
+                                f"{label} tab" if label else "", path))
+        claves.append(SourceKey(
+            "KeyBindingCategoryDef", f"{categoria}.description",
+            f'Key bindings for the "{label[:1].upper() + label[1:]}" section of '
+            f"the architect menu" if label else "", path))
+    return claves
+
+
+def _collect_patched_def_nodes(patches_root: Path) -> list[tuple[ET.Element, Path]]:
+    """Defs que un mod añade mediante `Patches/`, no mediante `Defs/`.
+
+    Es el mecanismo habitual para el contenido condicional: un
+    `PatchOperationFindMod` comprueba que otro mod esté presente y un
+    `PatchOperationAdd` inyecta los Defs nuevos. LWM's Deep Storage añade así su
+    nevera profunda cuando detecta RimFridge.
+
+    Esos Defs se traducen igual que cualquier otro, pero solo existen si el mod
+    condicionante está instalado; si no lo está, RimWorld registra la inyección
+    como error de carga. Por eso se extraen, pero conviene decidir a conciencia
+    si se traducen.
+
+    Se buscan los `<value>` de cualquier operación, a cualquier profundidad, sin
+    interpretar el `xpath`: basta con que el nodo parezca un Def.
+    """
+    nodes: list[tuple[ET.Element, Path]] = []
+    for xml_path in sorted(patches_root.rglob("*.xml")):
+        try:
+            root = ET.parse(xml_path).getroot()
+        except ET.ParseError:
+            continue
+        for value in root.iter("value"):
+            for node in value:
+                # Un Def se reconoce por llevar defName; así se descartan los
+                # <value> que solo contienen un fragmento de campo suelto.
+                if isinstance(node.tag, str) and node.find("defName") is not None:
+                    nodes.append((node, xml_path))
+    return nodes
+
+
+def extract_keyed(mod_path: Path, language: str = "English") -> list[SourceKey]:
+    """Extrae las claves `Keyed/` que el mod define en su idioma de origen.
+
+    Estas son las cadenas que el código C# pide con `.Translate()`. No se
+    deducen de los Defs: la única lista fiable es la carpeta `Keyed` del propio
+    mod, que por convención está en inglés.
+
+    Van con `def_type` vacío porque `Keyed/` no se organiza por tipo de Def:
+    la identidad de la clave es su nombre a secas, igual que en `model.py`.
+    """
+    claves: list[SourceKey] = []
+    for languages_dir in sorted(mod_path.rglob("Languages")):
+        keyed = languages_dir / language / "Keyed"
+        if not keyed.is_dir():
+            continue
+        for xml_path in sorted(keyed.rglob("*.xml")):
+            try:
+                root = ET.parse(xml_path).getroot()
+            except ET.ParseError:
+                continue
+            for node in root:
+                if not isinstance(node.tag, str):
+                    continue
+                claves.append(SourceKey("", node.tag, (node.text or "").strip(), xml_path))
+    return claves
+
+
 def extract_keys(mod_path: Path, version: str | None = None) -> list[SourceKey]:
     """Extrae todas las claves traducibles de un mod.
 
@@ -222,9 +315,18 @@ def extract_keys(mod_path: Path, version: str | None = None) -> list[SourceKey]:
     if (mod_path / "Defs").is_dir():
         candidatas.append(mod_path / "Defs")
 
+    # Los Defs añadidos por Patches se tratan igual que los declarados: el
+    # mismo recorrido, la misma herencia. Solo cambia de dónde salen.
+    for patches_root in (mod_path / version / "Patches" if version else None,
+                         mod_path / "Patches"):
+        if patches_root and patches_root.is_dir():
+            candidatas.append(patches_root)
+
     claves: list[SourceKey] = []
-    for defs_root in candidatas:
-        nodes = _collect_def_nodes(defs_root)
+    for root_dir in candidatas:
+        es_patch = root_dir.name == "Patches"
+        nodes = (_collect_patched_def_nodes(root_dir) if es_patch
+                 else _collect_def_nodes(root_dir))
         _resolve_inheritance(nodes)
 
         for node, path in nodes:
@@ -237,6 +339,9 @@ def extract_keys(mod_path: Path, version: str | None = None) -> list[SourceKey]:
             _walk(node, "", node.tag, def_name, path, claves)
 
         claves.extend(_synthesize_recipe_makers(nodes))
+        claves.extend(_synthesize_architect_categories(nodes))
+
+    claves.extend(extract_keyed(mod_path))
 
     # Dedup conservando el primero
     vistas: dict[str, SourceKey] = {}

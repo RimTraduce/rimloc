@@ -205,6 +205,117 @@ class DefExtractionTests(unittest.TestCase):
         self.assertIn("HediffDef/H.stages.1.label", ids)
 
 
+class KeyedExtractionTests(unittest.TestCase):
+    """Las Keyed no se deducen de los Defs: hay que leer las del propio mod.
+
+    LWM's Deep Storage tiene 109 claves en `Languages/English/Keyed/` y solo 36
+    en Defs. Mientras `extract_keys` las ignoró, `diff` daba por completa una
+    traducción a la que le faltaban tres cuartas partes del texto.
+    """
+
+    def test_extrae_las_keyed_del_idioma_de_origen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = Path(tmp) / "mod"
+            _write(mod, "Languages/English/Keyed/UI.xml",
+                   _lang_data("<LWM_DS_Total>Total: {0}</LWM_DS_Total>"))
+            keys = {k.id: k for k in defs.extract_keys(mod)}
+            self.assertIn("LWM_DS_Total", keys)
+            self.assertEqual(keys["LWM_DS_Total"].english, "Total: {0}")
+
+    def test_la_identidad_de_una_keyed_no_lleva_barra(self):
+        """Debe casar con `TranslationKey.id`, que para Keyed es el nombre solo.
+
+        Con `/LWM_DS_Total` a un lado y `LWM_DS_Total` al otro, `diff` contaba
+        cada clave como ausente y sobrante a la vez.
+        """
+        clave = defs.SourceKey("", "LWM_DS_Total", "Total: {0}", Path("x.xml"))
+        self.assertEqual(clave.id, "LWM_DS_Total")
+
+    def test_no_confunde_las_keyed_de_otro_idioma(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = Path(tmp) / "mod"
+            _write(mod, "Languages/German/Keyed/UI.xml",
+                   _lang_data("<SoloAleman>Lagerung</SoloAleman>"))
+            self.assertEqual(defs.extract_keys(mod), [])
+
+
+class GeneratedDefTests(unittest.TestCase):
+    """Defs que RimWorld fabrica en tiempo de carga y no están en ningún XML."""
+
+    def _defs_de(self, cuerpo: str, carpeta: str = "Defs"):
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = Path(tmp) / "mod"
+            _write(mod, f"{carpeta}/D.xml", f"<Defs>{cuerpo}</Defs>")
+            return {k.id: k for k in defs.extract_keys(mod)}
+
+    def test_cada_categoria_del_arquitecto_genera_su_atajo(self):
+        """RimWorld crea una KeyBindingCategoryDef por DesignationCategoryDef.
+
+        Los otros idiomas del mod la traducen; sin sintetizarla, `diff` la daría
+        por sobrante e invitaría a borrarla.
+        """
+        keys = self._defs_de("""
+          <DesignationCategoryDef>
+            <defName>LWM_DS_Storage</defName>
+            <label>storage</label>
+          </DesignationCategoryDef>
+        """)
+        self.assertIn("KeyBindingCategoryDef/Architect_LWM_DS_Storage.label", keys)
+        self.assertEqual(
+            keys["KeyBindingCategoryDef/Architect_LWM_DS_Storage.label"].english,
+            "storage tab")
+        desc = keys["KeyBindingCategoryDef/Architect_LWM_DS_Storage.description"]
+        self.assertIn('"Storage"', desc.english)
+
+    def test_extrae_defs_anadidos_por_un_patch(self):
+        """El contenido condicional se declara en Patches/, no en Defs/.
+
+        LWM's Deep Storage añade así su nevera profunda cuando detecta
+        RimFridge: dos claves que solo viven dentro de un PatchOperationAdd.
+        """
+        keys = self._defs_de("", carpeta="Defs")  # el mod base, vacío
+        self.assertEqual(keys, {})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = Path(tmp) / "mod"
+            _write(mod, "Patches/RimFridge.xml", """
+              <Patch>
+                <Operation Class="PatchOperationFindMod">
+                  <mods><li>RimFridge Updated</li></mods>
+                  <match Class="PatchOperationAdd">
+                    <xpath>/Defs</xpath>
+                    <value>
+                      <ThingDef>
+                        <defName>LWM_DS_RimFridge_Refrigerator</defName>
+                        <label>Deep Refrigerator</label>
+                      </ThingDef>
+                    </value>
+                  </match>
+                </Operation>
+              </Patch>
+            """)
+            keys = {k.id for k in defs.extract_keys(mod)}
+            self.assertIn("ThingDef/LWM_DS_RimFridge_Refrigerator.label", keys)
+
+    def test_un_patch_sin_defs_no_aporta_claves(self):
+        """Los patches de compatibilidad solo retocan campos existentes.
+
+        Un `<value>` con un fragmento suelto no es un Def y no debe emitir nada:
+        de lo contrario cada uno de los 26 patches del mod inventaría claves.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = Path(tmp) / "mod"
+            _write(mod, "Patches/Compat.xml", """
+              <Patch>
+                <Operation Class="PatchOperationAdd">
+                  <xpath>/Defs/ThingDef[defName="Ajeno"]/comps</xpath>
+                  <value><li Class="LWM.DeepStorage.Properties"><label>nope</label></li></value>
+                </Operation>
+              </Patch>
+            """)
+            self.assertEqual(defs.extract_keys(mod), [])
+
+
 class RenameGuessTests(unittest.TestCase):
     class _Key:
         def __init__(self, def_type, name, value=""):
