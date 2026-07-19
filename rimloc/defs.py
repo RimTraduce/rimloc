@@ -24,6 +24,9 @@ TRANSLATABLE_FIELDS = frozenset({
     # Etiquetas y descripciones
     "label", "labelShort", "labelPlural", "labelMale", "labelFemale",
     "labelNoun", "labelNounPretty", "labelAdjective", "customLabel", "permanentLabel",
+    # Agrupa variantes de un mismo edificio en el menú de construcción. Se
+    # escapó hasta que el informe del juego lo reclamó en Deep Storage.
+    "groupingLabel",
     "description", "descriptionShort", "descriptionFuture", "baseDescription",
     # Trabajos y verbos
     "jobString", "verb", "gerund", "gerundLabel", "reportString", "skillLabel",

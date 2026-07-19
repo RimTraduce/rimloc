@@ -267,6 +267,25 @@ class GeneratedDefTests(unittest.TestCase):
         desc = keys["KeyBindingCategoryDef/Architect_LWM_DS_Storage.description"]
         self.assertIn('"Storage"', desc.english)
 
+    def test_extrae_el_grouping_label_de_un_edificio(self):
+        """`building.groupingLabel` es traducible y estaba fuera de la lista.
+
+        Lo reclamó el informe del juego en Deep Storage. No hay redacción
+        oficial que consultar: el juego base no usa el campo en ningún Def, solo
+        los mods, así que ninguna traducción vanilla lo delataba.
+        """
+        keys = self._defs_de("""
+          <ThingDef>
+            <defName>LWM_DS_RimFridge_Refrigerator</defName>
+            <label>Deep Refrigerator</label>
+            <building>
+              <groupingLabel>Deep Refrigerator</groupingLabel>
+            </building>
+          </ThingDef>
+        """)
+        self.assertIn(
+            "ThingDef/LWM_DS_RimFridge_Refrigerator.building.groupingLabel", keys)
+
     def test_extrae_defs_anadidos_por_un_patch(self):
         """El contenido condicional se declara en Patches/, no en Defs/.
 
