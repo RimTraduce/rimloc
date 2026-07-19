@@ -10,6 +10,7 @@ Ignorar esto produce falsos positivos de "clave duplicada".
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -134,15 +135,57 @@ def load_language_folder(path: Path) -> LanguageFolder:
     return folder
 
 
-def find_language_folders(mod_path: Path) -> list[Path]:
-    """Devuelve las carpetas de idioma de un mod.
+#: Carpetas que nunca contienen material del mod.
+_IGNORADAS = {".git", ".github", "__pycache__", ".vscode", ".idea"}
 
-    Contempla la estructura versionada (`1.6/Languages/...`) además de la
-    clásica en la raíz del mod.
+
+def find_language_roots(mod_path: Path) -> list[Path]:
+    """Todas las carpetas `Languages/` de un mod, no solo la de la raíz.
+
+    Un mod puede tener varias por dos motivos:
+
+    - La estructura versionada (`1.6/Languages/...`).
+    - El contenido condicional: `LoadFolders.xml` permite cargar una carpeta
+      solo si otro mod está activo (`<li IfModActive="rimfridge.kv.rw">RimFridge</li>`),
+      y es la forma de que las inyecciones a Defs de otro mod no salgan como
+      errores de carga para quien no lo tenga instalado.
+
+    Si se mira solo la raíz, esas traducciones condicionales quedan sin validar
+    y sin sincronizar: existen en el mod pero la herramienta no las ve.
     """
-    found: list[Path] = []
-    for languages_dir in mod_path.rglob("Languages"):
+    encontradas: list[Path] = []
+    for languages_dir in sorted(mod_path.rglob("Languages")):
         if not languages_dir.is_dir():
             continue
+        if any(parte in _IGNORADAS for parte in languages_dir.relative_to(mod_path).parts):
+            continue
+        encontradas.append(languages_dir)
+    return encontradas
+
+
+def find_language_folders(mod_path: Path) -> list[Path]:
+    """Las carpetas de idioma concretas (`Languages/Spanish`, ...) de un mod."""
+    found: list[Path] = []
+    for languages_dir in find_language_roots(mod_path):
         found.extend(child for child in sorted(languages_dir.iterdir()) if child.is_dir())
     return found
+
+
+def load_language(paths: Sequence[Path]) -> LanguageFolder:
+    """Carga varias carpetas del MISMO idioma como una sola.
+
+    Un mod puede repartir un idioma entre la carpeta de la raíz y una o más
+    condicionales de `LoadFolders.xml`. Para RimWorld eso sigue siendo un único
+    idioma, y hay que tratarlo igual: si se contara cada carpeta por separado,
+    cada una parecería una traducción incompleta, y una clave repetida entre
+    dos de ellas —que RimWorld sí registra como duplicada— pasaría inadvertida.
+    """
+    if not paths:
+        raise ValueError("hacen falta carpetas que cargar")
+
+    fusionada = LanguageFolder(path=paths[0], language=paths[0].name)
+    for path in paths:
+        parcial = load_language_folder(path)
+        fusionada.keys.extend(parcial.keys)
+        fusionada.parse_errors.extend(parcial.parse_errors)
+    return fusionada

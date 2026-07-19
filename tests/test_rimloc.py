@@ -490,6 +490,85 @@ class DeployTests(unittest.TestCase):
                 self.assertFalse((destino / sobra).exists(), f"{sobra} no debería copiarse")
 
 
+class CarpetasCondicionalesTests(unittest.TestCase):
+    """`LoadFolders.xml` permite cargar una carpeta solo si otro mod está activo.
+
+    Es la forma de traducir Defs que otro mod condiciona —Deep Storage declara su
+    nevera solo si detecta RimFridge— sin que salgan como errores de carga para
+    quien no lo tenga. Pero esas traducciones existen, y la herramienta tiene que
+    verlas: mientras solo miró `Languages/` en la raíz, quedaban sin validar.
+    """
+
+    def _mod(self, tmp: str) -> Path:
+        mod = Path(tmp) / "mimod"
+        _write(mod, "Languages/Spanish/DefInjected/ThingDef/A.xml",
+               _lang_data("<LWM_Safe.label>caja fuerte</LWM_Safe.label>"))
+        _write(mod, "RimFridge/Languages/Spanish/DefInjected/ThingDef/B.xml",
+               _lang_data("<LWM_Fridge.label>refrigerador</LWM_Fridge.label>"))
+        _write(mod, "LoadFolders.xml",
+               '<loadFolders><v1.6><li>/</li>'
+               '<li IfModActive="rimfridge.kv.rw">RimFridge</li></v1.6></loadFolders>')
+        return mod
+
+    def test_encuentra_las_carpetas_condicionales(self):
+        from rimloc.model import find_language_roots
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = self._mod(tmp)
+            raices = {str(r.relative_to(mod)) for r in find_language_roots(mod)}
+            self.assertEqual(raices, {"Languages", str(Path("RimFridge/Languages"))})
+
+    def test_un_idioma_repartido_cuenta_como_uno_solo(self):
+        """Dos carpetas del mismo idioma no son dos traducciones a medias."""
+        from rimloc.cli import _language_dirs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            grupos = _language_dirs(self._mod(tmp), None)
+            self.assertEqual(len(grupos), 1, "debería haber un único idioma")
+            idioma, carpetas = grupos[0]
+            self.assertEqual(idioma, "Spanish")
+            self.assertEqual(len(carpetas), 2)
+
+    def test_carga_fusionada_ve_todas_las_claves(self):
+        from rimloc.cli import _language_dirs
+        from rimloc.model import load_language
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _, carpetas = _language_dirs(self._mod(tmp), "Spanish")[0]
+            folder = load_language(carpetas)
+            ids = {k.id for k in folder.keys}
+            self.assertIn("ThingDef/LWM_Safe.label", ids)
+            self.assertIn("ThingDef/LWM_Fridge.label", ids)
+
+    def test_no_mira_dentro_de_git(self):
+        """`.git` guarda copias de los archivos; contarlas duplicaría claves."""
+        from rimloc.model import find_language_roots
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = self._mod(tmp)
+            _write(mod, ".git/modules/x/Languages/Spanish/A.xml", _lang_data("<X.label>x</X.label>"))
+            for raiz in find_language_roots(mod):
+                self.assertNotIn(".git", raiz.parts)
+
+    def test_sync_replica_tambien_la_condicional(self):
+        """Si solo se sincronizara la raíz, la otra variante saldría incompleta."""
+        import argparse
+
+        from rimloc.cli import cmd_sync
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = self._mod(tmp)
+            code = cmd_sync(argparse.Namespace(
+                mod=str(mod), source_lang="Spanish",
+                target_lang="SpanishLatin", dry_run=False))
+            self.assertEqual(code, 0)
+            self.assertTrue(
+                (mod / "Languages/SpanishLatin/DefInjected/ThingDef/A.xml").exists())
+            self.assertTrue(
+                (mod / "RimFridge/Languages/SpanishLatin/DefInjected/ThingDef/B.xml").exists(),
+                "la carpeta condicional también debe sincronizarse")
+
+
 class PreviewTests(unittest.TestCase):
     """La carátula del Workshop. Pillow es opcional: sin él, estas se saltan."""
 

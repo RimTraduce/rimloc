@@ -12,7 +12,12 @@ from pathlib import Path
 
 from . import checks, defs
 from .checks import Severity
-from .model import SPANISH_VARIANTS, load_language_folder
+from .model import (
+    SPANISH_VARIANTS,
+    find_language_roots,
+    load_language,
+    load_language_folder,
+)
 # `preview` se puede importar siempre: no toca Pillow hasta que se llama a una
 # de sus funciones. Aquí solo hacen falta los nombres de los temas, para --help.
 from .preview import TEMAS as PREVIEW_THEMES
@@ -45,14 +50,23 @@ def find_rimworld() -> Path | None:
     return None
 
 
-def _language_dirs(mod: Path, lang: str | None) -> list[Path]:
-    base = mod / "Languages"
-    if not base.is_dir():
-        return []
-    if lang:
-        target = base / lang
-        return [target] if target.is_dir() else []
-    return [p for p in sorted(base.iterdir()) if p.is_dir()]
+def _language_dirs(mod: Path, lang: str | None) -> list[tuple[str, list[Path]]]:
+    """Los idiomas del mod, cada uno con TODAS sus carpetas.
+
+    No basta con `Languages/` en la raíz: el contenido que solo se carga si otro
+    mod está activo vive en su propia carpeta (ver `find_language_roots`).
+    Y esas carpetas no son idiomas aparte, son el mismo idioma repartido: se
+    agrupan por nombre para no contar cada trozo como una traducción a medias.
+    """
+    grupos: dict[str, list[Path]] = {}
+    for base in find_language_roots(mod):
+        for carpeta in sorted(base.iterdir()):
+            if not carpeta.is_dir():
+                continue
+            if lang and carpeta.name != lang:
+                continue
+            grupos.setdefault(carpeta.name, []).append(carpeta)
+    return sorted(grupos.items())
 
 
 def _load_glossary(path: Path | None) -> tuple[dict[str, str], tuple[str, ...]]:
@@ -96,8 +110,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
         return 2
 
     total_errors = total_warnings = 0
-    for lang_dir in dirs:
-        folder = load_language_folder(lang_dir)
+    for idioma, carpetas in dirs:
+        folder = load_language(carpetas)
         findings = checks.run_all(folder, originals or None, forbidden or None, keep)
 
         errores = sum(1 for f in findings if f.severity is Severity.ERROR)
@@ -106,7 +120,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         total_errors += errores
         total_warnings += avisos
 
-        print(f"\n=== {lang_dir.name} — {len(folder.keys)} claves ===")
+        print(f"\n=== {idioma} — {len(folder.keys)} claves ===")
         if not findings:
             print("  Sin incidencias.")
             continue
@@ -171,15 +185,15 @@ def cmd_diff(args: argparse.Namespace) -> int:
         print(f"No se encontró ninguna carpeta de idioma en {mod / 'Languages'}", file=sys.stderr)
         return 2
 
-    for lang_dir in dirs:
-        folder = load_language_folder(lang_dir)
+    for idioma, carpetas in dirs:
+        folder = load_language(carpetas)
         traducidas = folder.by_id
 
         faltan = [k for kid, k in originales.items() if kid not in traducidas]
         sobran = [k for kid, k in traducidas.items() if kid not in originales]
         cobertura = 100.0 * (len(originales) - len(faltan)) / len(originales) if originales else 0.0
 
-        print(f"\n=== {lang_dir.name} ===")
+        print(f"\n=== {idioma} ===")
         print(f"  Claves en el mod original : {len(originales)}")
         print(f"  Traducidas                : {len(traducidas)}")
         print(f"  Cobertura                 : {cobertura:.1f}%")
@@ -215,37 +229,47 @@ def cmd_sync(args: argparse.Namespace) -> int:
     antes o después se desincronicen.
     """
     mod = Path(args.mod).resolve()
-    origen = mod / "Languages" / args.source_lang
-    destino = mod / "Languages" / args.target_lang
 
-    if not origen.is_dir():
-        print(f"No existe la carpeta de origen: {origen}", file=sys.stderr)
+    # Se sincroniza cada raíz `Languages/` por separado: la de la raíz del mod y
+    # las condicionales de `LoadFolders.xml`. Si solo se mirara la primera, las
+    # traducciones condicionales se quedarían sin replicar a la otra variante y
+    # el mod saldría a medias para quien sí tenga el mod que las activa.
+    raices = [r for r in find_language_roots(mod) if (r / args.source_lang).is_dir()]
+    if not raices:
+        print(f"No existe ninguna carpeta de origen {args.source_lang} en {mod}",
+              file=sys.stderr)
         return 2
 
     if args.dry_run:
-        print(f"[simulación] {origen.name} → {destino.name}")
+        print(f"[simulación] {args.source_lang} → {args.target_lang}")
 
     copiados = 0
-    for src in sorted(origen.rglob("*.xml")):
-        rel = src.relative_to(origen)
-        dst = destino / rel
-        distintos = not dst.exists() or dst.read_bytes() != src.read_bytes()
-        if not distintos:
-            continue
-        copiados += 1
-        print(f"  {'[simulado] ' if args.dry_run else ''}{rel}")
-        if not args.dry_run:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+    huerfanos: list[Path] = []
 
-    # Archivos que sobran en destino: quedaron de una versión anterior
-    huerfanos = [
-        dst for dst in sorted(destino.rglob("*.xml"))
-        if not (origen / dst.relative_to(destino)).exists()
-    ] if destino.is_dir() else []
+    for raiz in raices:
+        origen = raiz / args.source_lang
+        destino = raiz / args.target_lang
+        etiqueta = raiz.relative_to(mod).parent
+        prefijo = f"{etiqueta}/" if str(etiqueta) != "." else ""
 
-    for huerfano in huerfanos:
-        print(f"  sobra en {destino.name}: {huerfano.relative_to(destino)}")
+        for src in sorted(origen.rglob("*.xml")):
+            rel = src.relative_to(origen)
+            dst = destino / rel
+            if dst.exists() and dst.read_bytes() == src.read_bytes():
+                continue
+            copiados += 1
+            print(f"  {'[simulado] ' if args.dry_run else ''}{prefijo}{rel}")
+            if not args.dry_run:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+
+        # Archivos que sobran en destino: quedaron de una versión anterior
+        if destino.is_dir():
+            for dst in sorted(destino.rglob("*.xml")):
+                if not (origen / dst.relative_to(destino)).exists():
+                    huerfanos.append(dst)
+                    print(f"  sobra en {prefijo}{args.target_lang}: "
+                          f"{dst.relative_to(destino)}")
 
     verbo = "se copiarían" if args.dry_run else "copiados"
     print(f"\n{copiados} archivo(s) {verbo}; {len(huerfanos)} huérfano(s) en destino.")
@@ -276,12 +300,12 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
 def cmd_stats(args: argparse.Namespace) -> int:
     mod = Path(args.mod).resolve()
-    for lang_dir in _language_dirs(mod, args.lang):
-        folder = load_language_folder(lang_dir)
+    for idioma, carpetas in _language_dirs(mod, args.lang):
+        folder = load_language(carpetas)
         por_tipo: dict[str, int] = {}
         for key in folder.keys:
             por_tipo[key.def_type or "(Keyed/Strings)"] = por_tipo.get(key.def_type or "(Keyed/Strings)", 0) + 1
-        print(f"\n=== {lang_dir.name} — {len(folder.keys)} claves ===")
+        print(f"\n=== {idioma} — {len(folder.keys)} claves ===")
         for tipo, n in sorted(por_tipo.items(), key=lambda kv: -kv[1]):
             print(f"  {tipo:<24} {n:>5}")
         palabras = sum(len(k.value.split()) for k in folder.keys)
