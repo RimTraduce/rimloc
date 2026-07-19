@@ -10,6 +10,13 @@ license = { text = "MIT" }
 # la mantenga, y cada dependencia es una forma de que eso no ocurra.
 dependencies = []
 
+# `preview` genera la carátula del Workshop y es lo único que necesita Pillow.
+# Va como extra para que la regla de arriba siga siendo cierta donde importa:
+# validar, comparar, sincronizar e instalar no dependen de nada, y son los que
+# corren en CI. Si Pillow falta, `rimloc preview` lo dice y los demás siguen.
+[project.optional-dependencies]
+preview = ["Pillow>=10"]
+
 [project.scripts]
 rimloc = "rimloc.cli:main"
 

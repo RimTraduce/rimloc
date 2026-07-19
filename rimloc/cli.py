@@ -13,6 +13,9 @@ from pathlib import Path
 from . import checks, defs
 from .checks import Severity
 from .model import SPANISH_VARIANTS, load_language_folder
+# `preview` se puede importar siempre: no toca Pillow hasta que se llama a una
+# de sus funciones. Aquí solo hacen falta los nombres de los temas, para --help.
+from .preview import TEMAS as PREVIEW_THEMES
 
 # Rutas habituales de instalación de RimWorld en Steam
 RIMWORLD_PATHS = (
@@ -52,21 +55,26 @@ def _language_dirs(mod: Path, lang: str | None) -> list[Path]:
     return [p for p in sorted(base.iterdir()) if p.is_dir()]
 
 
-def _load_glossary(path: Path | None) -> dict[str, str]:
-    """Carga el glosario: {"término prohibido": "término canónico"}."""
+def _load_glossary(path: Path | None) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Carga el glosario.
+
+    Devuelve el mapa {"término prohibido": "término canónico"} y la lista `keep`
+    de nombres propios que se dejan en inglés a propósito (títulos de mods,
+    marcas), dentro de los cuales no se avisa de nada.
+    """
     if not path:
-        return {}
+        return {}, ()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"aviso: no se pudo leer el glosario {path}: {exc}", file=sys.stderr)
-        return {}
+        return {}, ()
     forbidden: dict[str, str] = {}
     for entry in data.get("terms", []):
         canonical = entry.get("canonical", "")
         for wrong in entry.get("forbidden", []):
             forbidden[wrong] = canonical
-    return forbidden
+    return forbidden, tuple(data.get("keep", []))
 
 
 # --- Comandos ----------------------------------------------------------------
@@ -80,7 +88,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
             for k in defs.extract_keys(Path(args.source).resolve(), args.version)
         }
 
-    forbidden = _load_glossary(Path(args.glossary) if args.glossary else None)
+    forbidden, keep = _load_glossary(Path(args.glossary) if args.glossary else None)
 
     dirs = _language_dirs(mod, args.lang)
     if not dirs:
@@ -90,7 +98,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
     total_errors = total_warnings = 0
     for lang_dir in dirs:
         folder = load_language_folder(lang_dir)
-        findings = checks.run_all(folder, originals or None, forbidden or None)
+        findings = checks.run_all(folder, originals or None, forbidden or None, keep)
 
         errores = sum(1 for f in findings if f.severity is Severity.ERROR)
         avisos = sum(1 for f in findings if f.severity is Severity.WARNING)
@@ -281,6 +289,65 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _nombre_del_mod(mod: Path) -> str:
+    """Lee `<name>` de About.xml; si no se puede, usa el nombre de la carpeta."""
+    about = mod / "About" / "About.xml"
+    try:
+        import xml.etree.ElementTree as ET
+        nombre = (ET.parse(about).getroot().findtext("name") or "").strip()
+        if nombre:
+            return nombre
+    except (OSError, ET.ParseError):
+        pass
+    return mod.name
+
+
+def cmd_preview(args: argparse.Namespace) -> int:
+    # Pillow se comprueba aquí, no al importar: es lo único de rimloc que lo
+    # necesita, y el resto de la herramienta tiene que seguir funcionando sin él.
+    # `preview` sí se puede importar siempre; son sus funciones las que lo usan.
+    try:
+        from PIL import Image  # noqa: F401
+    except ImportError:
+        print("El comando «preview» necesita Pillow, que no viene con rimloc:\n"
+              "    pip install 'rimloc[preview]'\n"
+              "El resto de comandos funciona sin él.", file=sys.stderr)
+        return 2
+
+    from . import preview
+
+    mod = Path(args.mod).resolve()
+    destino = Path(args.out) if args.out else mod / "About" / "Preview.png"
+    titulo = args.title or _nombre_del_mod(mod)
+
+    if destino.exists() and not args.force:
+        print(f"Ya existe {destino}. Usa --force para sobrescribirlo.", file=sys.stderr)
+        return 1
+
+    # Si se da el mod original, se busca su preview para enmarcarlo. Es lo
+    # preferible: la carátula se reconoce como ese mod y hereda su paleta.
+    fuente: Path | None = None
+    if args.source:
+        candidato = Path(args.source).resolve() / "About" / "Preview.png"
+        if candidato.is_file():
+            fuente = candidato
+        else:
+            print(f"aviso: no hay Preview.png en {candidato.parent}; "
+                  "se genera la carátula sin imagen de partida.", file=sys.stderr)
+
+    comun = dict(tema=args.theme, autor=args.author,
+                 coleccion=args.collection, codigo=args.badge)
+    if fuente:
+        preview.generar_con_marco(destino, titulo, fuente, **comun)
+    else:
+        preview.generar(destino, titulo, **comun)
+
+    print(f"Carátula escrita en {destino}  ({destino.stat().st_size // 1024} kB)")
+    print(f"  tema: {args.theme}   título: {titulo}")
+    print(f"  base: {fuente if fuente else 'sin imagen de partida'}")
+    return 0
+
+
 # --- Parser ------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -324,6 +391,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("mod", help="Carpeta del mod de traducción")
     p.add_argument("--lang", help="Limitar a un idioma")
     p.set_defaults(func=cmd_stats)
+
+    p = sub.add_parser("preview", help="Genera la carátula del Workshop (necesita Pillow)")
+    p.add_argument("mod", help="Carpeta del mod de traducción")
+    p.add_argument("--source", help="Carpeta del mod original, para enmarcar su Preview.png")
+    p.add_argument("--title", help="Título a rotular (por defecto, el <name> de About.xml)")
+    p.add_argument("--theme", default="rimworld", choices=sorted(PREVIEW_THEMES),
+                   help="Estilo de la carátula")
+    p.add_argument("--author", default="", help="Quien firma la traducción")
+    p.add_argument("--collection", default="", help="Nombre de la colección")
+    p.add_argument("--badge", default="ES", help="Texto del sello circular ('' para quitarlo)")
+    p.add_argument("--out", help="Ruta de salida (por defecto About/Preview.png)")
+    p.add_argument("--force", action="store_true", help="Sobrescribir si ya existe")
+    p.set_defaults(func=cmd_preview)
 
     return parser
 

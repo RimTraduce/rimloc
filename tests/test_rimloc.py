@@ -381,6 +381,25 @@ class TextHygieneTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("daño PEM", found[0].message)
 
+    def test_glosario_respeta_los_nombres_propios(self):
+        """«stack» está prohibido, pero «Stack XXL» es el nombre de un mod.
+
+        El glosario de Deep Storage prohíbe «stack» (canónico: «pila») y a la
+        vez manda dejar los títulos de otros mods sin traducir. Sin la lista
+        `keep`, la regla delataba lo que ella misma ordena escribir.
+        """
+        folder = self._folder(
+            "<X.description>No lo actives si usas Stack XXL.</X.description>")
+        self.assertEqual(
+            checks.check_glossary(folder, {"stack": "pila"}, keep=("Stack XXL",)), [])
+
+    def test_el_nombre_propio_no_tapa_el_termino_suelto(self):
+        """La excepción protege el nombre, no la palabra en todo el archivo."""
+        folder = self._folder(
+            "<X.description>Con Stack XXL cada stack ocupa más.</X.description>")
+        found = checks.check_glossary(folder, {"stack": "pila"}, keep=("Stack XXL",))
+        self.assertEqual(len(found), 1)
+
     def test_tilde_inequivoca_es_aviso(self):
         folder = self._folder("<X.description>La victima grita.</X.description>")
         found = [f for f in checks.check_missing_accents(folder) if f.rule == "tilde-ausente"]
@@ -450,6 +469,131 @@ class DeployTests(unittest.TestCase):
             self.assertTrue((destino / "Languages").is_dir())
             for sobra in ("glosario.json", "README.md", ".github"):
                 self.assertFalse((destino / sobra).exists(), f"{sobra} no debería copiarse")
+
+
+class PreviewTests(unittest.TestCase):
+    """La carátula del Workshop. Pillow es opcional: sin él, estas se saltan."""
+
+    def setUp(self):
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            self.skipTest("Pillow no instalado (extra opcional 'preview')")
+
+    def test_el_modulo_se_importa_sin_pillow(self):
+        """`cli` importa `preview` siempre, así que no puede tocar PIL al cargar.
+
+        Si algún día alguien sube el `from PIL import ...` al principio del
+        módulo, rimloc entero dejaría de arrancar sin Pillow —justo lo que el
+        extra opcional pretende evitar—.
+        """
+        import inspect
+
+        from rimloc import preview
+
+        cabecera = inspect.getsource(preview).split("def _cargar_fuente")[0]
+        self.assertNotIn("from PIL", cabecera)
+        self.assertNotIn("import PIL", cabecera)
+
+    def test_genera_una_imagen_del_tamano_previsto(self):
+        from PIL import Image
+
+        from rimloc import preview
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destino = Path(tmp) / "Preview.png"
+            preview.generar(destino, "LWM's Deep Storage [ES]", autor="Ghost_Ranger")
+            self.assertTrue(destino.exists())
+            with Image.open(destino) as img:
+                self.assertEqual(img.size, (preview.ANCHO, preview.ALTO))
+            # Steam rechaza los previews de más de 1 MB.
+            self.assertLess(destino.stat().st_size, 1_000_000)
+
+    def test_un_titulo_larguisimo_no_se_sale(self):
+        """Sirve de plantilla para toda la colección o no sirve de nada."""
+        from rimloc import preview
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destino = Path(tmp) / "p.png"
+            preview.generar(
+                destino,
+                "Vanilla Genetics Expanded - More Lab Stuff and Even More Words [ES]",
+            )
+            self.assertTrue(destino.exists())
+
+    def test_el_titulo_pierde_el_sufijo_de_idioma(self):
+        """«[ES]» está en el nombre del mod, pero la carátula ya dice el idioma."""
+        from rimloc import preview
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # No se puede leer el texto pintado, pero sí comprobar que dos
+            # títulos que solo difieren en el sufijo dan la misma imagen.
+            a = preview.generar(Path(tmp) / "a.png", "Deep Storage [ES]")
+            b = preview.generar(Path(tmp) / "b.png", "Deep Storage")
+            self.assertEqual(a.read_bytes(), b.read_bytes())
+
+    def test_enmarca_el_preview_del_mod_original(self):
+        """Se reutiliza la imagen del mod para que la carátula lo represente."""
+        from PIL import Image
+
+        from rimloc import preview
+
+        with tempfile.TemporaryDirectory() as tmp:
+            origen = Path(tmp) / "original.png"
+            Image.new("RGB", (620, 620), (40, 90, 140)).save(origen)
+
+            destino = Path(tmp) / "Preview.png"
+            preview.generar_con_marco(destino, "Deep Storage [ES]", origen,
+                                      autor="Ghost_Ranger")
+            with Image.open(destino) as img:
+                self.assertEqual(img.size, (preview.ANCHO, preview.ALTO))
+            self.assertLess(destino.stat().st_size, 1_000_000)
+
+    def test_el_marco_no_deforma_el_original(self):
+        """Encajar, no estirar: un preview cuadrado no puede salir aplastado.
+
+        Se comprueba con una imagen de mitades de color muy distinto: si se
+        deformara o recortara mal, la frontera dejaría de caer en el centro de
+        la zona nítida.
+        """
+        from PIL import Image
+
+        from rimloc import preview
+
+        with tempfile.TemporaryDirectory() as tmp:
+            origen = Path(tmp) / "original.png"
+            src = Image.new("RGB", (400, 400), (255, 0, 0))
+            src.paste(Image.new("RGB", (400, 200), (0, 0, 255)), (0, 200))
+            src.save(origen)
+
+            destino = Path(tmp) / "p.png"
+            preview.generar_con_marco(destino, "X", origen, codigo="")
+            with Image.open(destino) as img:
+                pixeles = img.convert("RGB").load()
+                # La zona nítida es cuadrada y está centrada horizontalmente.
+                alto_util = preview.ALTO - 132 - 60
+                cx = preview.ANCHO // 2
+                arriba = pixeles[cx, 30 + alto_util // 4]
+                abajo = pixeles[cx, 30 + alto_util * 3 // 4]
+            self.assertGreater(arriba[0], arriba[2], "la mitad de arriba debe ser roja")
+            self.assertGreater(abajo[2], abajo[0], "la mitad de abajo debe ser azul")
+
+    def test_nombre_del_mod_sale_de_about(self):
+        from rimloc.cli import _nombre_del_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = Path(tmp) / "carpeta-fea"
+            _write(mod, "About/About.xml",
+                   "<ModMetaData><name>LWM's Deep Storage [ES]</name></ModMetaData>")
+            self.assertEqual(_nombre_del_mod(mod), "LWM's Deep Storage [ES]")
+
+    def test_nombre_del_mod_cae_a_la_carpeta_si_no_hay_about(self):
+        from rimloc.cli import _nombre_del_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = Path(tmp) / "lwm-deepstorage-es"
+            mod.mkdir()
+            self.assertEqual(_nombre_del_mod(mod), "lwm-deepstorage-es")
 
 
 if __name__ == "__main__":
