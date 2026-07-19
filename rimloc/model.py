@@ -34,11 +34,22 @@ class TranslationKey:
     value: str             # el texto en español
     source: Path           # archivo del que salió
     line: int = 0          # línea aproximada, para poder señalarla en los avisos
+    #: Elementos, si la clave traduce una lista entera en vez de un texto suelto.
+    #: RimWorld admite sustituir toda una lista (`rulesStrings` de un RulePack,
+    #: por ejemplo) declarando la clave sin índice y metiendo dentro los `<li>`.
+    #: Es el formato que recomienda el propio informe de traducción, y el único
+    #: viable cuando la traducción no tiene el mismo número de elementos que el
+    #: original.
+    items: tuple[str, ...] = ()
 
     @property
     def id(self) -> str:
         """Identidad real de la clave: lo que RimWorld considera única."""
         return f"{self.def_type}/{self.name}" if self.def_type else self.name
+
+    @property
+    def es_lista(self) -> bool:
+        return bool(self.items)
 
     def __str__(self) -> str:
         return self.id
@@ -56,8 +67,19 @@ class LanguageFolder:
     @property
     def by_id(self) -> dict[str, TranslationKey]:
         """Índice por identidad. Si hay duplicados gana el último, como RimWorld
-        avisaría; usa `duplicates()` para detectarlos antes."""
-        return {k.id: k for k in self.keys}
+        avisaría; usa `duplicates()` para detectarlos antes.
+
+        Una clave que traduce una lista entera cubre además todas sus posiciones:
+        `X.rulesStrings` sustituye a `X.rulesStrings.0`, `.1`, etc. El mod
+        original las declara con índice, así que sin esto `diff` daría por
+        ausentes las 450 que la lista ya traduce.
+        """
+        indice: dict[str, TranslationKey] = {}
+        for k in self.keys:
+            indice[k.id] = k
+            for i in range(len(k.items)):
+                indice.setdefault(f"{k.id}.{i}", k)
+        return indice
 
     def duplicates(self) -> list[list[TranslationKey]]:
         """Grupos de claves que comparten identidad. Cada grupo es un conflicto
@@ -122,13 +144,24 @@ def load_language_folder(path: Path) -> LanguageFolder:
             # descartamos igual que hace RimWorld.
             if not isinstance(node.tag, str):
                 continue
+
+            # Traducción de lista entera: la clave no lleva texto, lleva <li>.
+            items = tuple(
+                (li.text or "").strip() for li in node
+                if isinstance(li.tag, str) and li.tag == "li"
+            )
+            # Para las reglas de texto —glosario, tildes, caracteres invisibles—
+            # el contenido de la lista es tan revisable como cualquier otro.
+            valor = " ".join(items) if items else (node.text or "").strip()
+
             folder.keys.append(
                 TranslationKey(
                     def_type=def_type,
                     name=node.tag,
-                    value=(node.text or "").strip(),
+                    value=valor,
                     source=xml_path,
                     line=lines.get(node.tag, 0),
+                    items=items,
                 )
             )
 

@@ -490,6 +490,119 @@ class DeployTests(unittest.TestCase):
                 self.assertFalse((destino / sobra).exists(), f"{sobra} no debería copiarse")
 
 
+class ListasCompletasTests(unittest.TestCase):
+    """Claves que traducen una lista entera en vez de un texto suelto.
+
+    RimWorld admite sustituir toda una lista declarando la clave sin índice y
+    metiendo dentro los `<li>`. Es lo que recomienda el propio informe («this
+    list allows full-list translation») y lo único viable cuando la traducción
+    no tiene el mismo número de elementos que el original.
+    """
+
+    LISTA = (
+        "<W.generalRules.rulesStrings>"
+        "<li>subject->el camino de la innovación</li>"
+        "<li>subject_story->reveló verdades simples</li>"
+        "</W.generalRules.rulesStrings>"
+    )
+
+    def _folder(self, entry: str):
+        tmp = tempfile.mkdtemp()
+        root = Path(tmp) / "Spanish"
+        _write(root, "DefInjected/ResearchProjectDef/R.xml", _lang_data(entry))
+        return load_language_folder(root)
+
+    def test_una_lista_no_es_una_clave_vacia(self):
+        """El nodo no lleva texto propio: lo suyo está en los <li>.
+
+        Mientras el modelo no lo supo, cada bloque de lista se contaba como
+        clave vacía y `validate` daba 6 errores sobre una traducción correcta.
+        """
+        folder = self._folder(self.LISTA)
+        self.assertEqual(checks.check_empty(folder), [])
+
+    def test_un_elemento_vacio_si_es_error(self):
+        folder = self._folder(
+            "<W.generalRules.rulesStrings><li>algo</li><li></li>"
+            "</W.generalRules.rulesStrings>")
+        found = checks.check_empty(folder)
+        self.assertEqual(len(found), 1)
+        self.assertIs(found[0].severity, Severity.ERROR)
+
+    def test_la_lista_cubre_las_claves_con_indice(self):
+        """El mod original las declara con índice; la lista las sustituye todas.
+
+        Sin esto, `diff` daba por ausentes las 450 que la lista ya traduce.
+        """
+        folder = self._folder(self.LISTA)
+        ids = folder.by_id
+        self.assertIn("ResearchProjectDef/W.generalRules.rulesStrings", ids)
+        self.assertIn("ResearchProjectDef/W.generalRules.rulesStrings.0", ids)
+        self.assertIn("ResearchProjectDef/W.generalRules.rulesStrings.1", ids)
+        self.assertNotIn("ResearchProjectDef/W.generalRules.rulesStrings.2", ids)
+
+    def test_el_contenido_sigue_pasando_las_reglas_de_texto(self):
+        """Una lista no puede ser un agujero por donde colar cualquier cosa."""
+        folder = self._folder(
+            "<W.generalRules.rulesStrings><li>daño EMP</li>"
+            "</W.generalRules.rulesStrings>")
+        self.assertEqual(len(checks.check_glossary(folder, {"daño EMP": "daño PEM"})), 1)
+
+    def test_extrae_rulesStrings_del_mod_original(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = Path(tmp) / "mod"
+            _write(mod, "Defs/R.xml", """
+              <Defs>
+                <ResearchProjectDef>
+                  <defName>W</defName>
+                  <generalRules>
+                    <rulesStrings>
+                      <li>subject-&gt;innovation</li>
+                      <li>subject_story-&gt;unveiled truths</li>
+                    </rulesStrings>
+                  </generalRules>
+                </ResearchProjectDef>
+              </Defs>
+            """)
+            ids = {k.id for k in defs.extract_keys(mod)}
+            self.assertIn("ResearchProjectDef/W.generalRules.rulesStrings.0", ids)
+            self.assertIn("ResearchProjectDef/W.generalRules.rulesStrings.1", ids)
+
+
+class ClavesExternasTests(unittest.TestCase):
+    """Claves que el juego pide y que este parser no puede ver.
+
+    Otro mod se las inyecta en tiempo de carga: las `generalRules` de los
+    proyectos de WCE2 las pone Vanilla Expanded Framework, así que no están en
+    ningún XML del mod y `diff` las daba por sobrantes —457 traducciones
+    correctas señaladas para borrar—.
+    """
+
+    def test_los_patrones_evitan_el_falso_sobrante(self):
+        import json as _json
+
+        from rimloc.cli import _claves_externas
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "glosario.json"
+            cfg.write_text(_json.dumps({
+                "claves_externas": ["ResearchProjectDef/WCE2_*.generalRules.rulesStrings*"]
+            }), encoding="utf-8")
+
+            patrones = _claves_externas(cfg)
+            from fnmatch import fnmatch
+            self.assertTrue(any(fnmatch(
+                "ResearchProjectDef/WCE2_CrudeTorture.generalRules.rulesStrings.7", p)
+                for p in patrones))
+            # Y no debe tapar lo que sí sobra de verdad
+            self.assertFalse(any(fnmatch(
+                "ThingDef/WCE2_Borrado.label", p) for p in patrones))
+
+    def test_sin_glosario_no_hay_patrones(self):
+        from rimloc.cli import _claves_externas
+        self.assertEqual(_claves_externas(None), ())
+
+
 class CarpetasCondicionalesTests(unittest.TestCase):
     """`LoadFolders.xml` permite cargar una carpeta solo si otro mod está activo.
 

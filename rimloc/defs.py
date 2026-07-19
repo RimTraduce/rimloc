@@ -44,6 +44,9 @@ TRANSLATABLE_FIELDS = frozenset({
     "headerTip", "tipString", "inspectLine", "stuffAdjective", "graphLabelY",
     "customSummary", "instantlyOldLabel", "oldLabel", "shortDescOverride",
     "fixedName", "onMapInstruction", "rejectInputMessage",
+    # Reglas de gramática generativa: el juego las combina para redactar
+    # descripciones de arte, nombres y entradas del registro social.
+    "rulesStrings",
 })
 
 

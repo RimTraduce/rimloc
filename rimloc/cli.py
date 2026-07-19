@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 from difflib import SequenceMatcher
+from fnmatch import fnmatch
 from pathlib import Path
 
 from . import checks, defs
@@ -76,19 +77,38 @@ def _load_glossary(path: Path | None) -> tuple[dict[str, str], tuple[str, ...]]:
     de nombres propios que se dejan en inglés a propósito (títulos de mods,
     marcas), dentro de los cuales no se avisa de nada.
     """
-    if not path:
-        return {}, ()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"aviso: no se pudo leer el glosario {path}: {exc}", file=sys.stderr)
-        return {}, ()
+    data = _load_config(path)
     forbidden: dict[str, str] = {}
     for entry in data.get("terms", []):
         canonical = entry.get("canonical", "")
         for wrong in entry.get("forbidden", []):
             forbidden[wrong] = canonical
     return forbidden, tuple(data.get("keep", []))
+
+
+def _load_config(path: Path | None) -> dict:
+    if not path:
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"aviso: no se pudo leer {path}: {exc}", file=sys.stderr)
+        return {}
+
+
+def _claves_externas(path: Path | None) -> tuple[str, ...]:
+    """Patrones de claves que el juego pide y este parser no puede ver.
+
+    Hay traducciones legítimas que no salen de los Defs del mod: otro mod se las
+    inyecta en tiempo de carga. Las `generalRules` de los proyectos de
+    investigación las pone Vanilla Expanded Framework, así que no están en
+    ningún XML de WCE2 y `diff` las daba por sobrantes —invitando a borrar 457
+    traducciones correctas—.
+
+    Se declaran a mano, con comodines, porque la alternativa es que la
+    herramienta calle ante lo que sí sobra.
+    """
+    return tuple(_load_config(path).get("claves_externas", []))
 
 
 # --- Comandos ----------------------------------------------------------------
@@ -180,6 +200,7 @@ def cmd_diff(args: argparse.Namespace) -> int:
     source = Path(args.source).resolve()
 
     originales = {k.id: k for k in defs.extract_keys(source, args.version)}
+    externas = _claves_externas(Path(args.glossary) if args.glossary else None)
     dirs = _language_dirs(mod, args.lang)
     if not dirs:
         print(f"No se encontró ninguna carpeta de idioma en {mod / 'Languages'}", file=sys.stderr)
@@ -190,13 +211,24 @@ def cmd_diff(args: argparse.Namespace) -> int:
         traducidas = folder.by_id
 
         faltan = [k for kid, k in originales.items() if kid not in traducidas]
-        sobran = [k for kid, k in traducidas.items() if kid not in originales]
+        sobran = [
+            k for kid, k in traducidas.items()
+            if kid not in originales
+            and not any(fnmatch(kid, patron) for patron in externas)
+        ]
+        externas_vistas = sum(
+            1 for kid in traducidas
+            if kid not in originales and any(fnmatch(kid, p) for p in externas)
+        )
         cobertura = 100.0 * (len(originales) - len(faltan)) / len(originales) if originales else 0.0
 
         print(f"\n=== {idioma} ===")
         print(f"  Claves en el mod original : {len(originales)}")
         print(f"  Traducidas                : {len(traducidas)}")
         print(f"  Cobertura                 : {cobertura:.1f}%")
+        if externas_vistas:
+            print(f"  Inyectadas por otro mod   : {externas_vistas} "
+                  f"(declaradas en «claves_externas»; este parser no puede verlas)")
 
         if faltan:
             print(f"\n  SIN TRADUCIR ({len(faltan)}):")
@@ -395,6 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("source", help="Carpeta del mod original")
     p.add_argument("--version", help="Versión del mod original a leer (p. ej. 1.6)")
     p.add_argument("--lang", help="Limitar a un idioma")
+    p.add_argument("--glossary", help="Glosario del proyecto, para leer «claves_externas»")
     p.set_defaults(func=cmd_diff)
 
     p = sub.add_parser("sync", help="Replica una variante de idioma sobre otra")

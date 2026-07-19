@@ -161,6 +161,18 @@ def check_empty(folder: LanguageFolder) -> list[Finding]:
     """Claves vacías o con stubs de TODO sin rellenar."""
     findings: list[Finding] = []
     for key in folder.keys:
+        # Una clave que traduce una lista entera no lleva texto propio: lo suyo
+        # está en los <li>. Lo que sí es un fallo es que alguno esté vacío.
+        if key.es_lista:
+            for i, item in enumerate(key.items):
+                if not item:
+                    findings.append(Finding(
+                        Severity.ERROR, "clave-vacia",
+                        f"El elemento {i} de la lista está vacío.",
+                        key.source, key.line, key.id,
+                    ))
+            continue
+
         if not key.value:
             findings.append(Finding(
                 Severity.ERROR, "clave-vacia",
