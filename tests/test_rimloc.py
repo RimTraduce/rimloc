@@ -297,6 +297,27 @@ class GeneratedDefTests(unittest.TestCase):
             keys = {k.id for k in defs.extract_keys(mod)}
             self.assertIn("ThingDef/LWM_DS_RimFridge_Refrigerator.label", keys)
 
+    def test_no_inventa_claves_de_anteproyecto_ni_armazon(self):
+        """RimWorld genera X_Blueprint y X_Frame, pero NO se traducen.
+
+        Compone su nombre con el label ya traducido del ThingDef más un sufijo
+        de Keyed (BlueprintLabelExtra, FrameLabelExtra). El español oficial no
+        trae ni una de estas claves en sus 707 archivos.
+
+        Importa como regresión porque RimTrans sí las generaba: los mods
+        traducidos con él las arrastran a decenas, y en LWM's Deep Storage son
+        más de un tercio del archivo ruso sin hacer nada.
+        """
+        keys = self._defs_de("""
+          <ThingDef>
+            <defName>LWM_BigShelf</defName>
+            <label>big shelf</label>
+          </ThingDef>
+        """)
+        self.assertIn("ThingDef/LWM_BigShelf.label", keys)
+        for sobra in ("_Blueprint", "_Blueprint_Install", "_Frame"):
+            self.assertNotIn(f"ThingDef/LWM_BigShelf{sobra}.label", keys)
+
     def test_un_patch_sin_defs_no_aporta_claves(self):
         """Los patches de compatibilidad solo retocan campos existentes.
 
