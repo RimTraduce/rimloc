@@ -348,23 +348,42 @@ def check_comp_index(folder: LanguageFolder, originals: dict[str, str]) -> list[
     return findings
 
 
-def check_glossary(folder: LanguageFolder, forbidden: dict[str, str]) -> list[Finding]:
+def check_glossary(folder: LanguageFolder, forbidden: dict[str, str],
+                   keep: tuple[str, ...] = ()) -> list[Finding]:
     """Términos proscritos por el glosario del proyecto.
 
     `forbidden` mapea término prohibido -> término canónico. Sirve para que una
     incoherencia detectada una vez (por ejemplo «EMP» donde debe ir «PEM») no
     vuelva a aparecer en la siguiente actualización.
+
+    `keep` son nombres propios que se dejan en inglés a propósito: títulos de
+    mods, marcas, el nombre del mod que se traduce. Un término proscrito que
+    caiga dentro de uno de ellos no se avisa. Sin esto, prohibir «stack» delata
+    los mods «Stack XXL» y «Ogre Stack», y prohibir «Deep Storage» delata al
+    propio «LWM's Deep Storage», que el glosario dice expresamente que no se
+    traduce. Un validador que grita por lo que él mismo manda hacer se acaba
+    ignorando.
     """
     findings: list[Finding] = []
     for key in folder.keys:
         lowered = key.value.lower()
+
+        # Tramos intocables del texto, por posición.
+        protegido: list[tuple[int, int]] = []
+        for nombre in keep:
+            for m in re.finditer(re.escape(nombre.lower()), lowered):
+                protegido.append(m.span())
+
         for termino, canonico in forbidden.items():
-            if re.search(rf"\b{re.escape(termino.lower())}\b", lowered):
+            for m in re.finditer(rf"\b{re.escape(termino.lower())}\b", lowered):
+                if any(ini <= m.start() and m.end() <= fin for ini, fin in protegido):
+                    continue
                 findings.append(Finding(
                     Severity.WARNING, "glosario",
                     f"Usa «{termino}»; el término canónico del proyecto es «{canonico}».",
                     key.source, key.line, key.id,
                 ))
+                break  # un aviso por clave y término, no uno por aparición
     return findings
 
 
@@ -374,6 +393,7 @@ def run_all(
     folder: LanguageFolder,
     originals: dict[str, str] | None = None,
     forbidden: dict[str, str] | None = None,
+    keep: tuple[str, ...] = (),
 ) -> list[Finding]:
     """Ejecuta todas las reglas aplicables y devuelve los hallazgos ordenados."""
     findings: list[Finding] = []
@@ -390,7 +410,7 @@ def run_all(
         findings += check_placeholders(folder, originals)
         findings += check_comp_index(folder, originals)
     if forbidden:
-        findings += check_glossary(folder, forbidden)
+        findings += check_glossary(folder, forbidden, keep)
 
     orden = {Severity.ERROR: 0, Severity.WARNING: 1, Severity.INFO: 2}
     findings.sort(key=lambda f: (orden[f.severity], str(f.source), f.line))
